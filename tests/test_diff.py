@@ -75,3 +75,18 @@ def test_mask_long_value():
     masked = _mask("supersecret", visible_chars=4)
     assert masked.startswith("supe")
     assert '*' in masked
+
+
+def test_mask_empty_string():
+    """An empty value should return an empty string, not raise an error."""
+    assert _mask("") == ""
+
+
+def test_mask_default_visible_chars():
+    """Default masking should expose only the first few characters."""
+    value = "my-secret-password"
+    masked = _mask(value)
+    # The masked result should be shorter or equal in visible prefix
+    # and contain at least one asterisk.
+    assert '*' in masked
+    assert not masked.endswith(value)  # must not be fully unmasked
