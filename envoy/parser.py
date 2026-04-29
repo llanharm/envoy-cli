@@ -63,6 +63,21 @@ def write_env_file(filepath: str, env_vars: Dict[str, str]) -> None:
             f.write(f"{key}={value_out}\n")
 
 
+def validate_key(key: str) -> bool:
+    """Check whether a string is a valid environment variable name.
+
+    Valid names start with a letter or underscore, followed by any
+    combination of letters, digits, or underscores.
+
+    Args:
+        key: The variable name to validate.
+
+    Returns:
+        True if the key is valid, False otherwise.
+    """
+    return bool(re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', key))
+
+
 def _strip_quotes(value: str) -> str:
     """Remove surrounding single or double quotes from a value."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
