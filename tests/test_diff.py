@@ -90,3 +90,17 @@ def test_mask_default_visible_chars():
     # and contain at least one asterisk.
     assert '*' in masked
     assert not masked.endswith(value)  # must not be fully unmasked
+
+
+def test_mask_preserves_length():
+    """Masked value should have the same total length as the original."""
+    value = "supersecret"
+    masked = _mask(value, visible_chars=4)
+    assert len(masked) == len(value)
+
+
+def test_diff_changed_keys_not_in_added_or_removed():
+    """Keys with changed values should not appear in added or removed sets."""
+    result = diff_envs(BASE, TARGET)
+    assert "DB_PORT" not in result.added
+    assert "DB_PORT" not in result.removed
