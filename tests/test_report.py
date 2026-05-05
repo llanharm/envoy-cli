@@ -59,6 +59,12 @@ def test_text_no_sensitive_when_empty():
     assert "no sensitive keys" in out
 
 
+def test_text_returns_string(diff, redact_result):
+    """render_text should always return a str, never None or bytes."""
+    out = render_text(title="t", diff=diff, redact_result=redact_result)
+    assert isinstance(out, str)
+
+
 # ---------------------------------------------------------------------------
 # render_json
 # ---------------------------------------------------------------------------
@@ -75,6 +81,12 @@ def test_json_diff_lists_added(diff):
     assert "TIMEOUT" in data["diff"]["added"]
 
 
+def test_json_diff_lists_removed(diff):
+    """render_json should include removed keys in the diff section."""
+    data = json.loads(render_json(diff=diff))
+    assert "PORT" in data["diff"]["removed"]
+
+
 def test_json_redaction_lists_keys(redact_result):
     data = json.loads(render_json(redact_result=redact_result))
     assert "API_KEY" in data["redaction"]["redacted_keys"]
@@ -83,3 +95,9 @@ def test_json_redaction_lists_keys(redact_result):
 def test_json_title_included():
     data = json.loads(render_json(title="custom"))
     assert data["title"] == "custom"
+
+
+def test_json_returns_string(diff, redact_result):
+    """render_json should always return a str suitable for json.loads."""
+    out = render_json(title="t", diff=diff, redact_result=redact_result)
+    assert isinstance(out, str)
