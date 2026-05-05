@@ -1,161 +1,130 @@
-"""Command-line interface for envoy-cli.
+"""Main CLI entry-point for envoy-cli."""
+from __future__ import annotations
 
-Provides commands for parsing, diffing, and syncing .env files
-with vault backends.
-"""
-
-import sys
 import argparse
-from pathlib import Path
+import sys
 
-from envoy.parser import parse_env_file, write_env_file, EnvParseError
-from envoy.diff import diff_envs, has_changes, summary
-from envoy.sync import push_to_vault, pull_from_vault, SyncResult
+from envoy.diff import diff_envs
+from envoy.parser import parse_env_file, EnvParseError
+from envoy.report import render_text, render_json
+from envoy.redact import redact
 from envoy.vault import VaultClient, VaultConfigError
+from envoy.sync import push_to_vault, pull_from_vault
+from envoy.cli_audit import build_audit_parser, cmd_audit
+from envoy.cli_report import build_report_parser, cmd_report
+from envoy.cli_snapshot import build_snapshot_parser, cmd_snapshot
+from envoy.cli_lint import build_lint_parser, cmd_lint
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="envoy",
-        description="Manage and audit .env files across projects with vault sync support.",
+        description="Manage and audit .env files across projects",
     )
-    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    # --- diff ---
-    diff_parser = subparsers.add_parser(
-        "diff",
-        help="Show differences between two .env files.",
-    )
-    diff_parser.add_argument("base", metavar="BASE", help="Base .env file path.")
-    diff_parser.add_argument("target", metavar="TARGET", help="Target .env file path.")
-    diff_parser.add_argument(
-        "--no-mask",
-        action="store_true",
-        default=False,
-        help="Show actual secret values instead of masked output.",
-    )
+    # diff
+    p_diff = sub.add_parser("diff", help="Diff two .env files")
+    p_diff.add_argument("file_a", help="Base .env file")
+    p_diff.add_argument("file_b", help="Target .env file")
+    p_diff.add_argument("--mask", action="store_true", help="Mask secret values")
+    p_diff.add_argument("--format", choices=["text", "json"], default="text")
 
-    # --- push ---
-    push_parser = subparsers.add_parser(
-        "push",
-        help="Push a .env file to Vault.",
-    )
-    push_parser.add_argument("env_file", metavar="ENV_FILE", help="Path to the .env file.")
-    push_parser.add_argument("vault_path", metavar="VAULT_PATH", help="Vault secret path.")
-    push_parser.add_argument("--dry-run", action="store_true", default=False,
-                             help="Preview changes without writing to Vault.")
-    push_parser.add_argument("--vault-url", default="http://127.0.0.1:8200",
-                             help="Vault server URL (default: http://127.0.0.1:8200).")
-    push_parser.add_argument("--vault-token", default=None,
-                             help="Vault token (falls back to VAULT_TOKEN env var).")
+    # push
+    p_push = sub.add_parser("push", help="Push .env to Vault")
+    p_push.add_argument("file", help=".env file to push")
+    p_push.add_argument("--path", required=True, help="Vault secret path")
+    p_push.add_argument("--dry-run", action="store_true")
 
-    # --- pull ---
-    pull_parser = subparsers.add_parser(
-        "pull",
-        help="Pull secrets from Vault into a .env file.",
-    )
-    pull_parser.add_argument("vault_path", metavar="VAULT_PATH", help="Vault secret path.")
-    pull_parser.add_argument("env_file", metavar="ENV_FILE", help="Destination .env file path.")
-    pull_parser.add_argument("--dry-run", action="store_true", default=False,
-                             help="Preview changes without writing the file.")
-    pull_parser.add_argument("--vault-url", default="http://127.0.0.1:8200",
-                             help="Vault server URL (default: http://127.0.0.1:8200).")
-    pull_parser.add_argument("--vault-token", default=None,
-                             help="Vault token (falls back to VAULT_TOKEN env var).")
+    # pull
+    p_pull = sub.add_parser("pull", help="Pull secrets from Vault into .env")
+    p_pull.add_argument("file", help="Destination .env file")
+    p_pull.add_argument("--path", required=True, help="Vault secret path")
+    p_pull.add_argument("--dry-run", action="store_true")
+
+    build_audit_parser(sub)
+    build_report_parser(sub)
+    build_snapshot_parser(sub)
+    build_lint_parser(sub)
 
     return parser
 
 
 def cmd_diff(args: argparse.Namespace) -> int:
-    """Handle the `diff` subcommand."""
     try:
-        base_env = parse_env_file(Path(args.base))
-        target_env = parse_env_file(Path(args.target))
-    except EnvParseError as exc:
+        env_a = parse_env_file(args.file_a)
+        env_b = parse_env_file(args.file_b)
+    except (EnvParseError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 1
-    except FileNotFoundError as exc:
-        print(f"error: file not found — {exc.filename}", file=sys.stderr)
-        return 1
+        return 2
 
-    result = diff_envs(base_env, target_env)
+    diff = diff_envs(env_a, env_b)
+    redact_result = redact(env_b)
+    masked = env_b if not args.mask else {k: redact_result.redacted.get(k, v) for k, v in env_b.items()}
 
-    if not has_changes(result):
-        print("No differences found.")
-        return 0
+    if args.format == "json":
+        print(render_json(diff, redact_result))
+    else:
+        print(render_text(diff, redact_result, title=f"{args.file_a} → {args.file_b}"))
 
-    mask = not args.no_mask
-    print(summary(result, mask=mask))
-    return 0
+    return 0 if not diff.has_changes() else 1
 
 
-def _make_vault_client(args: argparse.Namespace) -> VaultClient | None:
-    """Construct a VaultClient from CLI args, printing errors on failure."""
-    try:
-        return VaultClient(url=args.vault_url, token=args.vault_token)
-    except VaultConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return None
+def _make_vault_client() -> VaultClient:
+    return VaultClient()
 
 
 def cmd_push(args: argparse.Namespace) -> int:
-    """Handle the `push` subcommand."""
-    client = _make_vault_client(args)
-    if client is None:
-        return 1
-
     try:
-        result: SyncResult = push_to_vault(
-            env_path=Path(args.env_file),
-            vault_path=args.vault_path,
-            client=client,
-            dry_run=args.dry_run,
-        )
-    except (EnvParseError, FileNotFoundError, VaultConfigError) as exc:
+        client = _make_vault_client()
+        env = parse_env_file(args.file)
+    except (VaultConfigError, EnvParseError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 1
+        return 2
 
-    print(result.message)
+    result = push_to_vault(env, client, args.path, dry_run=args.dry_run)
+    status = "(dry-run) " if args.dry_run else ""
+    print(f"{status}push {args.path}: written={result.written} skipped={result.skipped}")
     return 0
 
 
 def cmd_pull(args: argparse.Namespace) -> int:
-    """Handle the `pull` subcommand."""
-    client = _make_vault_client(args)
-    if client is None:
-        return 1
-
     try:
-        result: SyncResult = pull_from_vault(
-            vault_path=args.vault_path,
-            env_path=Path(args.env_file),
-            client=client,
-            dry_run=args.dry_run,
-        )
-    except (VaultConfigError, OSError) as exc:
+        client = _make_vault_client()
+    except VaultConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 1
+        return 2
 
-    print(result.message)
+    result = pull_from_vault(client, args.path, args.file, dry_run=args.dry_run)
+    status = "(dry-run) " if args.dry_run else ""
+    print(f"{status}pull {args.path}: written={result.written} skipped={result.skipped}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for the envoy CLI."""
     parser = _build_parser()
     args = parser.parse_args(argv)
-
-    if args.command is None:
-        parser.print_help()
-        return 0
 
     dispatch = {
         "diff": cmd_diff,
         "push": cmd_push,
         "pull": cmd_pull,
+        "audit": cmd_audit,
+        "report": cmd_report,
+        "snapshot": cmd_snapshot,
+        "lint": cmd_lint,
     }
 
-    return dispatch[args.command](args)
+    if args.command is None:
+        parser.print_help()
+        return 0
+
+    handler = dispatch.get(args.command)
+    if handler is None:
+        parser.print_help()
+        return 1
+
+    return handler(args)
 
 
 if __name__ == "__main__":
