@@ -58,6 +58,14 @@ def test_tail_limits_results(audit: AuditLog) -> None:
     assert len(audit.tail(20)) == 10
 
 
+def test_tail_returns_most_recent(audit: AuditLog) -> None:
+    """tail() should return the last N entries in chronological order."""
+    for i in range(5):
+        audit.record(action="diff", env_file=f".env.{i}")
+    recent = audit.tail(3)
+    assert [e.env_file for e in recent] == [".env.2", ".env.3", ".env.4"]
+
+
 def test_dry_run_flag_recorded(audit: AuditLog) -> None:
     audit.record(action="push", env_file=".env", dry_run=True)
     entry = audit.read_all()[0]
